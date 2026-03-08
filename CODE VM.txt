@@ -1,0 +1,190 @@
+module vm(
+    input  clk,
+    input  rst,
+
+    input  selection,
+    input  dispence,
+    input  cancel,
+
+    input  money_valid,
+    input  [6:0] money_value,
+    input  [3:0] product_id,
+	 
+    output reg ready,
+    output reg dispenced
+	 output reg product_deliveredx,
+
+    output reg [8:0] entered_money,
+    output reg [6:0] extra_money,
+    output reg [8:0] total,
+    output reg [8:0] change_out
+);
+
+    
+    localparam [8:0] MAX_LIMIT     = 9'd511;
+	 reg [6:0] idle_count;
+    localparam TIMEOUT_LIMIT = 7'd120;
+
+    localparam [2:0]
+        IDLE    = 3'd0,
+        SELECT  = 3'd1,
+        COLLECT = 3'd2,
+        READY   = 3'd3,
+        CLEAR   = 3'd4;
+	
+	reg [2:0] state;
+    
+    reg [6:0] price_LUT [0:15];
+    initial begin
+        price_LUT[0]=5;  price_LUT[1]=10; price_LUT[2]=10; price_LUT[3]=20;
+        price_LUT[4]=15; price_LUT[5]=30; price_LUT[6]=20; price_LUT[7]=40;
+        price_LUT[8]=25; price_LUT[9]=50; price_LUT[10]=30; price_LUT[11]=60;
+        price_LUT[12]=40; price_LUT[13]=80; price_LUT[14]=50; price_LUT[15]=100;
+    end
+
+    
+    reg money_d, select_d, cancel_d, disp_d;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            money_d  <= 0;
+            select_d <= 0;
+            cancel_d <= 0;
+            disp_d   <= 0;
+        end else begin
+            money_d  <= money_valid;
+            select_d <= selection;
+            cancel_d <= cancel;
+            disp_d   <= dispence;
+        end
+    end
+
+    wire money_pulse  = money_valid & ~money_d;
+    wire select_pulse = selection   & ~select_d;
+    wire cancel_pulse = cancel      & ~cancel_d;
+    wire disp_pulse   = dispence    & ~disp_d;
+
+   
+    reg [25:0] sec_cnt;
+    reg tick_1s;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            sec_cnt <= 0;
+            tick_1s <= 0;
+        end else if (sec_cnt == 50_000_000 - 1) begin
+            sec_cnt <= 0;
+            tick_1s <= 1;
+        end else begin
+            sec_cnt <= sec_cnt + 1;
+            tick_1s <= 0;
+        end
+    end
+
+    
+
+ always @(posedge clk) begin
+        if (rst)
+            idle_count <= 0;
+        else if (state == IDLE || money_pulse || select_pulse || cancel_pulse || disp_pulse)
+            idle_count <= 0;
+        else if (tick_1s)
+            idle_count <= idle_count + 1;
+    end
+
+
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state         <= IDLE;
+            entered_money <= 0;
+            extra_money   <= 0;
+            total         <= 0;
+            change_out    <= 0;
+            ready         <= 0;
+            dispenced     <= 0;
+        end else begin
+            case (state)
+
+                
+                IDLE: begin
+                    entered_money <= 0;
+                    extra_money   <= 0;
+                    total         <= 0;
+                    change_out    <= 0;
+                    ready         <= 0;
+                    dispenced     <= 0;
+
+						  
+                    if (select_pulse)
+                        state <= SELECT;
+                end
+
+                
+                SELECT: begin
+                   
+                    if (select_pulse) begin
+                        if (total + price_LUT[product_id] <= MAX_LIMIT)
+                            total <= total + price_LUT[product_id];
+                    end
+
+                   
+                    if (disp_pulse && total != 0)
+                        state <= COLLECT;
+
+                   
+                    if (cancel_pulse) begin
+                        total <= 0;
+                        state <= IDLE;
+                    end
+                end
+
+               
+                COLLECT: begin
+                    if (money_pulse) begin
+                        if (entered_money + money_value <= MAX_LIMIT)
+                            entered_money <= entered_money + money_value;
+                        else begin
+                            extra_money   <= (entered_money + money_value) - MAX_LIMIT;
+                            entered_money <= MAX_LIMIT;
+                        end
+                    end
+
+                    if (cancel_pulse || idle_count >= TIMEOUT_LIMIT) begin
+                        change_out <= entered_money + extra_money;
+                        state <= CLEAR;
+                    end
+                    else if (entered_money >= total) begin
+                        ready <= 1;
+                        state <= READY;
+                    end
+                end
+
+             READY: begin
+                    if (disp_pulse) begin
+     
+                        change_out        <= (entered_money + extra_money) - total;
+                        product_delivered <= 1;
+                        ready             <= 0;
+                        state             <= CLEAR;
+                    end
+                    else if (cancel_pulse || idle_count >= TIMEOUT_LIMIT) begin
+                        change_out        <= entered_money + extra_money;
+                        product_delivered <= 0;
+                        ready             <= 0;
+                        state             <= CLEAR;
+                    end
+                end
+
+                
+                CLEAR: begin
+                    dispenced <= 1;
+                    state <= IDLE;
+                end
+
+                default: state <= IDLE;
+            endcase
+        end
+    end
+
+endmodule
